@@ -1244,7 +1244,7 @@ bool write_cpustate_to_list(ARMCPU *cpu);
 
 static inline bool arm_excp_unmasked(CPUState *cs, unsigned int excp_idx)
 {
-    CPUARMState *env = cs->env_ptr;
+    CPUARMState *env = (CPUARMState *) cs->env_ptr;
     unsigned int cur_el = arm_current_el(env);
     unsigned int target_el = arm_excp_target_el(cs, excp_idx);
     /* FIXME: Use actual secure state.  */

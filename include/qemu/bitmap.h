@@ -95,7 +95,7 @@ int slow_bitmap_intersects(const unsigned long *bitmap1,
 static inline unsigned long *bitmap_try_new(long nbits)
 {
     long len = BITS_TO_LONGS(nbits) * sizeof(unsigned long);
-    return g_try_malloc0(len);
+    return (unsigned long *) g_try_malloc0(len);
 }
 
 static inline unsigned long *bitmap_new(long nbits)
