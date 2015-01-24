@@ -399,7 +399,7 @@ static QemuDTDeviceInitReturnCode hwdtb_init_device_type_memory(QemuDTNode *node
         snprintf(name, RAM_NAME_LENGTH, "ram@0x%" PRIx64, address);
 
         DEBUG_PRINTF("Creating memory region %s: 0x%0" PRIx64 "-0x%0" PRIx64"\n", name, address, address + size);
-        memory_region_init_ram(ram, NULL, name, size);
+        memory_region_init_ram(ram, NULL, name, size, &error_abort);
         memory_region_add_subregion(sysmem, address, ram);
     }
 
