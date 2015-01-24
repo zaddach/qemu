@@ -20,6 +20,8 @@
  * MA 02111-1307 USA
  */
 
+#include <exec/cpu_ldst.h>
+
 
 #if DEPTH == 8
 #define PIXEL_TYPE		uint8_t

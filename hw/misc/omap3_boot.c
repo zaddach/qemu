@@ -24,11 +24,13 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 #include "hw/hw.h"
+#include "hw/sd.h"
 #include "hw/arm/omap.h"
 #include "sysemu/sysemu.h"
 #include "sysemu/char.h"
 #include "hw/block/flash.h"
 #include "sysemu/blockdev.h"
+#include "sysemu/block-backend.h"
 #include "exec/address-spaces.h"
 
 //#define OMAP3_BOOT_DEBUG
@@ -704,20 +706,20 @@ static int omap3_mmc_boot(struct omap_mpu_state_s *s)
      2. CH sector located on first sector, followed by boot loader image */
     if (di) {
         sector = g_malloc0(0x200);
-        if (bdrv_pread(di->bdrv, 0, sector, 0x200) == 0x200) {
+        if (bdrv_pread(blk_bs(blk_by_legacy_dinfo(di)), 0, sector, 0x200) == 0x200) {
             for (i = 0, p = sector + 0x1be; i < 4; i++, p += 0x10) 
                 if (p[0] == 0x80) break;
             if (sector[0x1fe] == 0x55 && sector[0x1ff] == 0xaa /* signature */
                 && i < 4 /* active partition exists */
                 && (p[4] == 1 || p[4] == 4 || p[4] == 6 || p[4] == 11
                     || p[4] == 12 || p[4] == 14 || p[4] == 15) /* FAT */
-                && bdrv_pread(di->bdrv,
+                && bdrv_pread(blk_bs(blk_by_legacy_dinfo(di)),
                               (pstart = omap3_get_le32(p + 8)) * 0x200,
                               sector, 0x200) == 0x200
                 && sector[0x1fe] == 0x55 && sector[0x1ff] == 0xaa)
-                result = omap3_mmc_fat_boot(di->bdrv, sector, pstart, s);
+                result = omap3_mmc_fat_boot(blk_bs(blk_by_legacy_dinfo(di)), sector, pstart, s);
             else
-                result = omap3_mmc_raw_boot(di->bdrv, sector, s);
+                result = omap3_mmc_raw_boot(blk_bs(blk_by_legacy_dinfo(di)), sector, s);
         }
         free(sector);
     }
@@ -902,7 +904,7 @@ void omap3_boot_rom_init(struct omap_mpu_state_s *s)
     if (!s->bootrom_initialized) {
         s->bootrom_initialized = 1;
         memory_region_init_ram(&s->bootrom, NULL, "omap3_boot_rom",
-                               OMAP3XXX_BOOTROM_SIZE);
+                               OMAP3XXX_BOOTROM_SIZE, &error_abort);
         memory_region_set_readonly(&s->bootrom, true);
         memory_region_add_subregion(get_system_memory(),
                                     OMAP3_Q1_BASE + 0x14000,

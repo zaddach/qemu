@@ -22,9 +22,14 @@
 #ifndef CONFIG_USER_ONLY
 #include "hw/xen/xen.h"
 
+ram_addr_t qemu_ram_alloc_from_file(ram_addr_t size, MemoryRegion *mr,
+                                    bool share, const char *mem_path,
+                                    Error **errp);
 ram_addr_t qemu_ram_alloc_from_ptr(ram_addr_t size, void *host,
-                                   MemoryRegion *mr);
-ram_addr_t qemu_ram_alloc(ram_addr_t size, MemoryRegion *mr);
+                                   MemoryRegion *mr, Error **errp);
+ram_addr_t qemu_ram_alloc(ram_addr_t size, MemoryRegion *mr, Error **errp);
+int qemu_get_ram_fd(ram_addr_t addr);
+void *qemu_get_ram_block_host_ptr(ram_addr_t addr);
 void *qemu_get_ram_ptr(ram_addr_t addr);
 void qemu_ram_free(ram_addr_t addr);
 void qemu_ram_free_from_ptr(ram_addr_t addr);
@@ -44,6 +49,21 @@ static inline bool cpu_physical_memory_get_dirty(ram_addr_t start,
     return next < end;
 }
 
+static inline bool cpu_physical_memory_get_clean(ram_addr_t start,
+                                                 ram_addr_t length,
+                                                 unsigned client)
+{
+    unsigned long end, page, next;
+
+    assert(client < DIRTY_MEMORY_NUM);
+
+    end = TARGET_PAGE_ALIGN(start + length) >> TARGET_PAGE_BITS;
+    page = start >> TARGET_PAGE_BITS;
+    next = find_next_zero_bit(ram_list.dirty_memory[client], end, page);
+
+    return next < end;
+}
+
 static inline bool cpu_physical_memory_get_dirty_flag(ram_addr_t addr,
                                                       unsigned client)
 {
@@ -59,11 +79,32 @@ static inline bool cpu_physical_memory_is_clean(ram_addr_t addr)
     return !(vga && code && migration);
 }
 
+static inline bool cpu_physical_memory_range_includes_clean(ram_addr_t start,
+                                                            ram_addr_t length)
+{
+    bool vga = cpu_physical_memory_get_clean(start, length, DIRTY_MEMORY_VGA);
+    bool code = cpu_physical_memory_get_clean(start, length, DIRTY_MEMORY_CODE);
+    bool migration =
+        cpu_physical_memory_get_clean(start, length, DIRTY_MEMORY_MIGRATION);
+    return vga || code || migration;
+}
+
 static inline void cpu_physical_memory_set_dirty_flag(ram_addr_t addr,
                                                       unsigned client)
 {
     assert(client < DIRTY_MEMORY_NUM);
     set_bit(addr >> TARGET_PAGE_BITS, ram_list.dirty_memory[client]);
+}
+
+static inline void cpu_physical_memory_set_dirty_range_nocode(ram_addr_t start,
+                                                              ram_addr_t length)
+{
+    unsigned long end, page;
+
+    end = TARGET_PAGE_ALIGN(start + length) >> TARGET_PAGE_BITS;
+    page = start >> TARGET_PAGE_BITS;
+    bitmap_set(ram_list.dirty_memory[DIRTY_MEMORY_MIGRATION], page, end - page);
+    bitmap_set(ram_list.dirty_memory[DIRTY_MEMORY_VGA], page, end - page);
 }
 
 static inline void cpu_physical_memory_set_dirty_range(ram_addr_t start,
@@ -117,7 +158,7 @@ static inline void cpu_physical_memory_set_dirty_lebitmap(unsigned long *bitmap,
             if (bitmap[i] != 0) {
                 c = leul_to_cpu(bitmap[i]);
                 do {
-                    j = ffsl(c) - 1;
+                    j = ctzl(c);
                     c &= ~(1ul << j);
                     page_number = (i * HOST_LONG_BITS + j) * hpratio;
                     addr = page_number * TARGET_PAGE_SIZE;
