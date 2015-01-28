@@ -44,21 +44,18 @@ struct SysbusDeviceInfo
 
 static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_sysbus_device(QemuDTNode *node, void *opaque);
 static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_sysbus_device_with_properties(QemuDTNode *node, void *opaque);
+static QemuDTDeviceInitReturnCode hwdtb_sysbus_connect_interrupts_simple(SysBusDevice *sysbus_device, QemuDTNode *node);
+static QemuDTDeviceInitReturnCode hwdtb_sysbus_connect_interrupts_extended(SysBusDevice *sysbus_device, QemuDTNode *node);
+static QemuDTDeviceInitReturnCode hwdtb_sysbus_connect_interrupts(SysBusDevice *sysbus_device, QemuDTNode *node);
 
-static QemuDTDeviceInitReturnCode get_interrupt_controller(QemuDTNode *node, QemuDTNode **interrupt_controller, uint32_t *num_interrupt_cells)
+static QemuDTDeviceInitReturnCode get_interrupt_controller_by_phandle(QemuDTNode *node, uint32_t phandle_interrupt_parent, QemuDTNode **interrupt_controller, uint32_t *num_interrupt_cells)
 {
     assert(node);
     assert(interrupt_controller);
     assert(num_interrupt_cells);
 
-    DeviceTreeProperty prop_interrupt_parent;
     DeviceTreeProperty prop_num_interrupt_cells;
-    uint32_t phandle_interrupt_parent;
     int err;
-
-    err = hwdtb_fdt_node_get_property_recursive(&node->dt_node, "interrupt-parent", &prop_interrupt_parent);
-    assert(!err);
-    phandle_interrupt_parent = hwdtb_fdt_property_get_uint32(&prop_interrupt_parent);
 
     *interrupt_controller = hwdtb_qemudt_find_phandle(node->qemu_dt, phandle_interrupt_parent);
     if (!*interrupt_controller) {
@@ -78,15 +75,59 @@ static QemuDTDeviceInitReturnCode get_interrupt_controller(QemuDTNode *node, Qem
     return QEMUDT_DEVICE_INIT_SUCCESS;
 }
 
+static QemuDTDeviceInitReturnCode get_interrupt_controller_by_interrupt_parent_property(QemuDTNode *node, QemuDTNode **interrupt_controller, uint32_t *num_interrupt_cells)
+{
+    assert(node);
+    assert(interrupt_controller);
+    assert(num_interrupt_cells);
+
+    DeviceTreeProperty prop_interrupt_parent;
+    uint32_t phandle_interrupt_parent;
+    int err;
+
+    err = hwdtb_fdt_node_get_property_recursive(&node->dt_node, "interrupt-parent", &prop_interrupt_parent);
+    assert(!err);
+    phandle_interrupt_parent = hwdtb_fdt_property_get_uint32(&prop_interrupt_parent);
+
+    return get_interrupt_controller_by_phandle(node, phandle_interrupt_parent, interrupt_controller, num_interrupt_cells);
+}
+
 static QemuDTDeviceInitReturnCode hwdtb_sysbus_is_interrupt_controller_initialized(QemuDTNode *node)
 {
-	QemuDTNode *interrupt_controller;
-	uint32_t num_interrupt_cells;
-
-	return get_interrupt_controller(node, &interrupt_controller, &num_interrupt_cells);
+	return hwdtb_sysbus_connect_interrupts(NULL, node);
 }
 
 static QemuDTDeviceInitReturnCode hwdtb_sysbus_connect_interrupts(SysBusDevice *sysbus_device, QemuDTNode *node)
+{
+	DeviceTreeProperty prop_interrupts;
+	int err;
+
+	err = hwdtb_fdt_node_get_property(&node->dt_node, "interrupts", &prop_interrupts);
+	if (err == 0) {
+		return hwdtb_sysbus_connect_interrupts_simple(sysbus_device, node);
+	}
+	else if (err != -FDT_ERR_NOTFOUND) {
+		fprintf(stderr, "ERROR: during retrieval of \"interrupts\" property: %s\n", fdt_strerror(err));
+		assert(false);
+	}
+
+	err = hwdtb_fdt_node_get_property(&node->dt_node, "interrupts-extended", &prop_interrupts);
+	if (err == 0) {
+		return hwdtb_sysbus_connect_interrupts_extended(sysbus_device, node);
+	}
+	else if (err == -FDT_ERR_NOTFOUND) {
+		/* Node does not have interrupts or interrupts-extended property,
+		 * just assume it's not connected to an interrupt controller.
+		 */
+		return QEMUDT_DEVICE_INIT_SUCCESS;
+	}
+	else {
+		fprintf(stderr, "ERROR: during retrieval of \"interrupts-extended\" property: %s\n", fdt_strerror(err));
+		assert(false);
+	}
+}
+
+static QemuDTDeviceInitReturnCode hwdtb_sysbus_connect_interrupts_simple(SysBusDevice *sysbus_device, QemuDTNode *node)
 {
 	DeviceTreeProperty prop_interrupts;
 	DeviceTreePropertyIterator propitr_interrupts;
@@ -97,19 +138,17 @@ static QemuDTDeviceInitReturnCode hwdtb_sysbus_connect_interrupts(SysBusDevice *
 	int n;
 	int err;
 
-	err_irq = get_interrupt_controller(node, &interrupt_controller, &num_interrupt_cells);
+	err_irq = get_interrupt_controller_by_interrupt_parent_property(node, &interrupt_controller, &num_interrupt_cells);
 	if (err_irq != QEMUDT_DEVICE_INIT_SUCCESS) {
 		return err_irq;
 	}
 
 	err = hwdtb_fdt_node_get_property(&node->dt_node, "interrupts", &prop_interrupts);
-	if (err == -FDT_ERR_NOTFOUND) {
-		//TODO: Try interrupts-extended attribute, if none of the two is present then the thing as succeeded.
+	assert(!err);
+
+	/* If the function is just called to verify everything is set up right */
+	if (!sysbus_device) {
 		return QEMUDT_DEVICE_INIT_SUCCESS;
-	}
-	else if (err != 0) {
-		fprintf(stderr, "ERROR: during retrieval of \"interrupts\" property: %s\n", fdt_strerror(err));
-		assert(false);
 	}
 
 	has_next = hwdtb_fdt_property_begin(&prop_interrupts, &propitr_interrupts);
@@ -124,6 +163,74 @@ static QemuDTDeviceInitReturnCode hwdtb_sysbus_connect_interrupts(SysBusDevice *
 		irq = qdev_get_gpio_in(interrupt_controller->qemu_device, irq_num);
 		sysbus_connect_irq(sysbus_device, n, irq);
 		n += 1;
+	}
+
+	return QEMUDT_DEVICE_INIT_SUCCESS;
+}
+
+static QemuDTDeviceInitReturnCode hwdtb_sysbus_connect_interrupts_extended(SysBusDevice *sysbus_device, QemuDTNode *node)
+{
+	DeviceTreeProperty prop_interrupts;
+	DeviceTreePropertyIterator propitr_interrupts;
+	QemuDTNode *interrupt_controller;
+	uint32_t num_interrupt_cells;
+	uint32_t phandle_irq_controller;
+	QemuDTDeviceInitReturnCode err_irq;
+	bool has_next;
+	int n;
+	int err;
+
+	err_irq = get_interrupt_controller_by_interrupt_parent_property(node, &interrupt_controller, &num_interrupt_cells);
+	if (err_irq != QEMUDT_DEVICE_INIT_SUCCESS) {
+		return err_irq;
+	}
+
+	err = hwdtb_fdt_node_get_property(&node->dt_node, "interrupts-extended", &prop_interrupts);
+	assert(!err);
+
+	/* Traverse a first time and check if all interrupt controllers are present and initialized */
+	has_next = hwdtb_fdt_property_begin(&prop_interrupts, &propitr_interrupts);
+	n = 0;
+	while (has_next) {
+		uint64_t irq_num;
+
+		has_next = hwdtb_fdt_property_get_next_uint32(&prop_interrupts, &propitr_interrupts, &phandle_irq_controller);
+		assert(has_next);
+
+		err_irq = get_interrupt_controller_by_phandle(node, phandle_irq_controller, &interrupt_controller, &num_interrupt_cells);
+		if (err_irq != QEMUDT_DEVICE_INIT_SUCCESS) {
+			return err_irq;
+		}
+
+		has_next = hwdtb_fdt_property_get_next_uint(&prop_interrupts, &propitr_interrupts, num_interrupt_cells * 4, &irq_num);
+		assert(irq_num >= 0 && irq_num <= (uint64_t)(int)-1);
+	}
+
+	/* If we were just probing if interrupt controllers are ok, return at this point */
+	if (!sysbus_device) {
+		return QEMUDT_DEVICE_INIT_SUCCESS;
+	}
+
+	/* Now in the second traversal, really connect pins */
+	has_next = hwdtb_fdt_property_begin(&prop_interrupts, &propitr_interrupts);
+	n = 0;
+	while (has_next) {
+		uint64_t irq_num;
+		qemu_irq irq;
+
+		has_next = hwdtb_fdt_property_get_next_uint32(&prop_interrupts, &propitr_interrupts, &phandle_irq_controller);
+		assert(has_next);
+
+		err_irq = get_interrupt_controller_by_phandle(node, phandle_irq_controller, &interrupt_controller, &num_interrupt_cells);
+		if (err_irq != QEMUDT_DEVICE_INIT_SUCCESS) {
+			return err_irq;
+		}
+
+		has_next = hwdtb_fdt_property_get_next_uint(&prop_interrupts, &propitr_interrupts, num_interrupt_cells * 4, &irq_num);
+		assert(irq_num >= 0 && irq_num <= (uint64_t)(int)-1);
+
+		irq = qdev_get_gpio_in(interrupt_controller->qemu_device, irq_num);
+		sysbus_connect_irq(sysbus_device, n, irq);
 	}
 
 	return QEMUDT_DEVICE_INIT_SUCCESS;
@@ -508,6 +615,7 @@ hwdtb_declare_compatible_handler("arm,pl031", hwdtb_init_compatibility_sysbus_de
 hwdtb_declare_compatible_handler("arm,pl041", hwdtb_init_compatibility_sysbus_device_with_properties, &pl041_info)
 hwdtb_declare_compatible_handler("arm,pl061", hwdtb_init_compatibility_sysbus_device, (void *) "pl061")
 hwdtb_declare_compatible_handler("arm,pl080", hwdtb_init_compatibility_sysbus_device, (void *) "pl080")
+hwdtb_declare_compatible_handler("arm,pl081", hwdtb_init_compatibility_sysbus_device, (void *) "pl080")
 hwdtb_declare_compatible_handler("arm,pl110", hwdtb_init_compatibility_sysbus_device, (void *) "pl110")
 //TODO: interrupt-extended needs to be implemented for this
 //hwdtb_declare_compatible_handler("arm,pl180", hwdtb_init_compatibility_sysbus_device, (void *) "pl181")
