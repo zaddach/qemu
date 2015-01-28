@@ -103,7 +103,14 @@ static QemuDTDeviceInitReturnCode hwdtb_sysbus_connect_interrupts(SysBusDevice *
 	}
 
 	err = hwdtb_fdt_node_get_property(&node->dt_node, "interrupts", &prop_interrupts);
-	assert(!err);
+	if (err == -FDT_ERR_NOTFOUND) {
+		//TODO: Try interrupts-extended attribute, if none of the two is present then the thing as succeeded.
+		return QEMUDT_DEVICE_INIT_SUCCESS;
+	}
+	else if (err != 0) {
+		fprintf(stderr, "ERROR: during retrieval of \"interrupts\" property: %s\n", fdt_strerror(err));
+		assert(false);
+	}
 
 	has_next = hwdtb_fdt_property_begin(&prop_interrupts, &propitr_interrupts);
 	n = 0;
@@ -433,7 +440,7 @@ static QemuDTDeviceInitReturnCode hwdtb_init_nodename_cpus(QemuDTNode *node, voi
     return QEMUDT_DEVICE_INIT_SUCCESS;
 };
 
-static QObject * get_first_clock_frequency(QemuDTNode *node)
+static QObject * hwdtb_get_first_clock_frequency_as_qdev_property(QemuDTNode *node)
 {
 	assert(node);
 
@@ -477,7 +484,7 @@ static SysbusDeviceInfo pl041_info = {
 };
 
 static PropertySetter integratorcp_timer_property_setters[] = {
-	{.qdev_property_name = "freq", .dt_property_getter = get_first_clock_frequency},
+	{.qdev_property_name = "freq", .dt_property_getter = hwdtb_get_first_clock_frequency_as_qdev_property},
 	{.qdev_property_name = NULL, .dt_property_getter = NULL}
 };
 static SysbusDeviceInfo integratorcp_timer_info = {
@@ -509,6 +516,7 @@ hwdtb_declare_compatible_handler("arm,versatile-sic", hwdtb_init_compatibility_s
 hwdtb_declare_compatible_handler("arm,pl050", hwdtb_init_compatibility_pl050, NULL)
 hwdtb_declare_compatible_handler("smsc,lan91c111", hwdtb_init_compatilibility_smsc_lan91c111, NULL)
 hwdtb_declare_compatible_handler("arm,versatile-vic", hwdtb_init_compatibility_pl190, NULL);
+hwdtb_declare_compatible_handler("arm,versatile-sic", hwdtb_init_compatibility_sysbus_device, (void *) "versatilepb_sic")
 hwdtb_declare_compatible_handler("arm,arm1136", hwdtb_init_compatibility_cpu, (void *) "arm1136")
 hwdtb_declare_compatible_handler("arm,integrator-cp-timer", hwdtb_init_compatibility_sysbus_device_with_properties, &integratorcp_timer_info)
 hwdtb_declare_compatible_handler("arm,core-module-versatile", hwdtb_init_compatibility_sysbus_device_with_properties, &realview_sysctl_info)
