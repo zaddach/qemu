@@ -11,6 +11,8 @@
 #include "exec/address-spaces.h"
 #include "hw/sysbus.h"
 #include "net/net.h"
+#include "qapi/qmp/qint.h"
+#include "qom/qom-qobject.h"
 
 #include <libfdt.h>
 
@@ -25,7 +27,23 @@
 
 #define DEBUG_PRINTF(str, ...) fprintf(stderr, "%s:%d - %s:  " str, __FILE__, __LINE__, __func__, ##__VA_ARGS__)
 
+typedef struct PropertySetter PropertySetter;
+typedef struct SysbusDeviceInfo SysbusDeviceInfo;
+
+struct PropertySetter
+{
+	const char *qdev_property_name;
+	QObject *(*dt_property_getter)(QemuDTNode *node);
+};
+
+struct SysbusDeviceInfo
+{
+	const char *qdev_name;
+	PropertySetter *property_setters;
+};
+
 static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_sysbus_device(QemuDTNode *node, void *opaque);
+static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_sysbus_device_with_properties(QemuDTNode *node, void *opaque);
 
 static QemuDTDeviceInitReturnCode get_interrupt_controller(QemuDTNode *node, QemuDTNode **interrupt_controller, uint32_t *num_interrupt_cells)
 {
@@ -60,6 +78,50 @@ static QemuDTDeviceInitReturnCode get_interrupt_controller(QemuDTNode *node, Qem
     return QEMUDT_DEVICE_INIT_SUCCESS;
 }
 
+static QemuDTDeviceInitReturnCode hwdtb_sysbus_is_interrupt_controller_initialized(QemuDTNode *node)
+{
+	QemuDTNode *interrupt_controller;
+	uint32_t num_interrupt_cells;
+
+	return get_interrupt_controller(node, &interrupt_controller, &num_interrupt_cells);
+}
+
+static QemuDTDeviceInitReturnCode hwdtb_sysbus_connect_interrupts(SysBusDevice *sysbus_device, QemuDTNode *node)
+{
+	DeviceTreeProperty prop_interrupts;
+	DeviceTreePropertyIterator propitr_interrupts;
+	QemuDTNode *interrupt_controller;
+	uint32_t num_interrupt_cells;
+	QemuDTDeviceInitReturnCode err_irq;
+	bool has_next;
+	int n;
+	int err;
+
+	err_irq = get_interrupt_controller(node, &interrupt_controller, &num_interrupt_cells);
+	if (err_irq != QEMUDT_DEVICE_INIT_SUCCESS) {
+		return err_irq;
+	}
+
+	err = hwdtb_fdt_node_get_property(&node->dt_node, "interrupts", &prop_interrupts);
+	assert(!err);
+
+	has_next = hwdtb_fdt_property_begin(&prop_interrupts, &propitr_interrupts);
+	n = 0;
+	while (has_next) {
+		uint64_t irq_num;
+		qemu_irq irq;
+
+		has_next = hwdtb_fdt_property_get_next_uint(&prop_interrupts, &propitr_interrupts, num_interrupt_cells * 4, &irq_num);
+		assert(irq_num >= 0 && irq_num <= (uint64_t)(int)-1);
+
+		irq = qdev_get_gpio_in(interrupt_controller->qemu_device, irq_num);
+		sysbus_connect_irq(sysbus_device, n, irq);
+		n += 1;
+	}
+
+	return QEMUDT_DEVICE_INIT_SUCCESS;
+}
+
 static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_simple_bus(QemuDTNode *node, void *opaque)
 {
     //Nothing to do.
@@ -76,33 +138,21 @@ static QemuDTDeviceInitReturnCode hwdtb_init_compatilibility_smsc_lan91c111(Qemu
         return QEMUDT_DEVICE_INIT_IGNORE;
     }
 
-    QemuDTNode *interrupt_controller;
-    DeviceTreeProperty prop_interrupts;
     uint64_t address;
     uint64_t size;
-    uint32_t num_interrupt_cells;
-    uint64_t irq_num;
-    qemu_irq irq;
     QemuDTDeviceInitReturnCode err_irq;
     DeviceState *qdev;
     SysBusDevice *sysbus_dev;
     int err;
 
+    err_irq = hwdtb_sysbus_is_interrupt_controller_initialized(node);
+    if (err_irq == QEMUDT_DEVICE_INIT_DEPENDENCY_NOT_INITIALIZED) {
+    	return err_irq;
+    }
+    assert(err_irq == QEMUDT_DEVICE_INIT_SUCCESS);
+
     err = hwdtb_fdt_node_get_property_reg(&node->dt_node, &address, &size);
     assert(!err);
-
-    err_irq = get_interrupt_controller(node, &interrupt_controller, &num_interrupt_cells);
-    if (err_irq != QEMUDT_DEVICE_INIT_SUCCESS) {
-        return err_irq;
-    }
-
-    err = hwdtb_fdt_node_get_property(&node->dt_node, "interrupts", &prop_interrupts);
-    assert(!err);
-    irq_num = hwdtb_fdt_property_get_uint(&prop_interrupts, num_interrupt_cells * 4);
-    assert(irq_num >= 0 && irq_num <= (uint64_t)(int)-1);
-
-    irq = qdev_get_gpio_in(interrupt_controller->qemu_device, irq_num);
-    assert(irq);
 
     qemu_check_nic_model(&nd_table[instance_index], "smc91c111");
     qdev = qdev_create(NULL, TYPE_SMC91C111);
@@ -110,11 +160,16 @@ static QemuDTDeviceInitReturnCode hwdtb_init_compatilibility_smsc_lan91c111(Qemu
     qdev_init_nofail(qdev);
     sysbus_dev = SYS_BUS_DEVICE(qdev);
     sysbus_mmio_map(sysbus_dev, 0, address);
-    sysbus_connect_irq(sysbus_dev, 0, irq);
 
-    instance_index += 1;
-    node->qemu_device = qdev;
-    return QEMUDT_DEVICE_INIT_SUCCESS;
+    err_irq = hwdtb_sysbus_connect_interrupts(sysbus_dev, node);
+    if (err_irq == QEMUDT_DEVICE_INIT_SUCCESS) {
+		instance_index += 1;
+		node->qemu_device = qdev;
+		return QEMUDT_DEVICE_INIT_SUCCESS;
+    }
+    else {
+    	return err_irq;
+    }
 }
 
 static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_pl050(QemuDTNode *node, void *opaque)
@@ -146,102 +201,12 @@ static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_pl050(QemuDTNode *nod
 
 static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_sysbus_device(QemuDTNode *node, void *opaque)
 {
-    DeviceTreeProperty prop_interrupts;
-    DeviceTreePropertyIterator propitr_interrupts;
-    QemuDTNode *interrupt_controller;
-    const char *qdev_name = (const char *) opaque;
-    uint64_t address;
-    uint64_t size;
-    uint32_t num_interrupt_cells;
-    QemuDTDeviceInitReturnCode err_irq;
-    int err;
-    bool has_next;
+	SysbusDeviceInfo dev_info;
 
-    DeviceState *qdev;
-    SysBusDevice *sysbus_device;
-    int n;
+	dev_info.qdev_name = (const char *) opaque;
+	dev_info.property_setters = NULL;
 
-    err = hwdtb_fdt_node_get_property_reg(&node->dt_node, &address, &size);
-    assert(!err);
-
-    err_irq = get_interrupt_controller(node, &interrupt_controller, &num_interrupt_cells);
-    if (err_irq != QEMUDT_DEVICE_INIT_SUCCESS) {
-        return err_irq;
-    }
-
-    qdev = qdev_create(NULL, qdev_name);
-    assert(qdev);
-    sysbus_device = SYS_BUS_DEVICE(qdev);
-    assert(sysbus_device);
-    qdev_init_nofail(qdev);
-    if ((hwaddr) address != (hwaddr)-1) {
-        sysbus_mmio_map(sysbus_device, 0, address);
-    }
-
-    err = hwdtb_fdt_node_get_property(&node->dt_node, "interrupts", &prop_interrupts);
-    assert(!err);
-
-    has_next = hwdtb_fdt_property_begin(&prop_interrupts, &propitr_interrupts);
-    n = 0;
-    while (has_next) {
-        uint64_t irq_num;
-        qemu_irq irq;
-
-        has_next = hwdtb_fdt_property_get_next_uint(&prop_interrupts, &propitr_interrupts, num_interrupt_cells * 4, &irq_num);
-        assert(irq_num >= 0 && irq_num <= (uint64_t)(int)-1);
-
-        irq = qdev_get_gpio_in(interrupt_controller->qemu_device, irq_num);
-        sysbus_connect_irq(sysbus_device, n, irq);
-        n += 1;
-    }
-
-    node->qemu_device = qdev;
-    return QEMUDT_DEVICE_INIT_SUCCESS;
-}
-
-static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_arm_integrator_cp_timer(QemuDTNode *node, void *opaque)
-{
-    assert(node);
-
-    DeviceTreeProperty prop_clocks;
-    QemuDTNode *interrupt_controller;
-    uint64_t address;
-    uint64_t size;
-    uint32_t num_interrupt_cells;
-    uint32_t clock_phandle;
-    QemuDTDeviceInitReturnCode err_irq;
-    int err;
-    DeviceState *qdev;
-    SysBusDevice *sysbus_device;
-    uint64_t clock_frequency;
-
-    err = hwdtb_fdt_node_get_property_reg(&node->dt_node, &address, &size);
-    assert(!err);
-
-    err_irq = get_interrupt_controller(node, &interrupt_controller, &num_interrupt_cells);
-    if (err_irq != QEMUDT_DEVICE_INIT_SUCCESS) {
-        return err_irq;
-    }
-
-    /* Get the clock's frequency */
-    err = hwdtb_fdt_node_get_property(&node->dt_node, "clocks", &prop_clocks);
-    assert(!err);
-
-    clock_phandle = hwdtb_fdt_property_get_uint32(&prop_clocks);
-    err = hwdtb_qemudt_get_clock_frequency(node->qemu_dt, clock_phandle, &clock_frequency);
-    assert(!err);
-    assert(clock_frequency <= (uint64_t)(uint32_t) -1);
-
-    qdev = qdev_create(NULL, TYPE_INTEGRATOR_CP_TIMER);
-    assert(qdev);
-    sysbus_device = SYS_BUS_DEVICE(qdev);
-    assert(sysbus_device);
-
-    qdev_prop_set_uint32(qdev, "freq", clock_frequency);
-
-    qdev_init_nofail(qdev);
-
-    return QEMUDT_DEVICE_INIT_SUCCESS;
+	return hwdtb_init_compatibility_sysbus_device_with_properties(node, &dev_info);
 }
 
 static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_arm_versatile_fpga_irq(QemuDTNode *node, void *opaque)
@@ -254,6 +219,7 @@ static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_arm_versatile_fpga_ir
     uint64_t address;
     uint64_t size;
     int err;
+
 
     //TODO: Handle secondary interrupt controller
 
@@ -298,6 +264,61 @@ static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_arm_versatile_fpga_ir
     instance_index += 1;
     node->is_initialized = true;
     return QEMUDT_DEVICE_INIT_SUCCESS;
+}
+
+static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_sysbus_device_with_properties(QemuDTNode *node, void *opaque)
+{
+	SysbusDeviceInfo *dev_info = (SysbusDeviceInfo *) opaque;
+	uint64_t address;
+	uint64_t size;
+	QemuDTDeviceInitReturnCode err_irq;
+	int err;
+
+	DeviceState *qdev;
+	SysBusDevice *sysbus_device;
+
+	err_irq = hwdtb_sysbus_is_interrupt_controller_initialized(node);
+	if (err_irq == QEMUDT_DEVICE_INIT_DEPENDENCY_NOT_INITIALIZED) {
+		return err_irq;
+	}
+	assert(err_irq == QEMUDT_DEVICE_INIT_SUCCESS);
+
+	err = hwdtb_fdt_node_get_property_reg(&node->dt_node, &address, &size);
+	assert(!err);
+
+	qdev = qdev_create(NULL, dev_info->qdev_name);
+	assert(qdev);
+	sysbus_device = SYS_BUS_DEVICE(qdev);
+	assert(sysbus_device);
+
+	for (unsigned i = 0; i < (unsigned) -1 && dev_info->property_setters; ++i) {
+		PropertySetter *setter = &dev_info->property_setters[i];
+		Error *error = NULL;
+
+		if (!setter->qdev_property_name || !setter->dt_property_getter) {
+			break;
+		}
+
+		QObject *value = setter->dt_property_getter(node);
+		object_property_set_qobject(OBJECT(qdev), value, setter->qdev_property_name, &error);
+		if (error) {
+			fprintf(stderr, "ERROR: Failed to set property %s on qdev %s\n", setter->qdev_property_name, dev_info->qdev_name);
+		}
+	}
+
+	qdev_init_nofail(qdev);
+	if ((hwaddr) address != (hwaddr)-1) {
+		sysbus_mmio_map(sysbus_device, 0, address);
+	}
+
+	node->qemu_device = qdev;
+
+	err_irq = hwdtb_sysbus_connect_interrupts(sysbus_device, node);
+	if (err_irq != QEMUDT_DEVICE_INIT_SUCCESS) {
+		return err_irq;
+	}
+
+	return QEMUDT_DEVICE_INIT_SUCCESS;
 }
 
 
@@ -412,6 +433,59 @@ static QemuDTDeviceInitReturnCode hwdtb_init_nodename_cpus(QemuDTNode *node, voi
     return QEMUDT_DEVICE_INIT_SUCCESS;
 };
 
+static QObject * get_first_clock_frequency(QemuDTNode *node)
+{
+	assert(node);
+
+    DeviceTreeProperty prop_clocks;
+    uint32_t clock_phandle;
+    int err;
+    uint64_t clock_frequency;
+
+    /* Get the clock's frequency */
+    err = hwdtb_fdt_node_get_property(&node->dt_node, "clocks", &prop_clocks);
+    assert(!err);
+
+    clock_phandle = hwdtb_fdt_property_get_uint32(&prop_clocks);
+    err = hwdtb_qemudt_get_clock_frequency(node->qemu_dt, clock_phandle, &clock_frequency);
+    assert(!err);
+    assert(clock_frequency <= (uint64_t)(uint32_t) -1);
+
+    return QOBJECT(qint_from_int(clock_frequency));
+}
+
+static QObject * realview_sysctl_get_sys_id(QemuDTNode *node) {return QOBJECT(qint_from_int(0x41007004));}
+static QObject * realview_sysctl_get_proc_id(QemuDTNode *node) {return QOBJECT(qint_from_int(0x02000000));}
+static PropertySetter realview_sysctl_property_setters[] = {
+	{.qdev_property_name = "sys_id", .dt_property_getter = realview_sysctl_get_sys_id},
+	{.qdev_property_name = "proc_id", .dt_property_getter = realview_sysctl_get_proc_id},
+	{.qdev_property_name = NULL, .dt_property_getter = NULL}
+};
+static SysbusDeviceInfo realview_sysctl_info = {
+	.qdev_name = "realview_sysctl",
+	.property_setters = realview_sysctl_property_setters
+};
+
+static QObject * pl041_get_nc_fifo_depth(QemuDTNode *node) {return QOBJECT(qint_from_int(512));}
+static PropertySetter pl041_property_setters[] = {
+	{.qdev_property_name = "nc_fifo_depth", .dt_property_getter = pl041_get_nc_fifo_depth},
+	{.qdev_property_name = NULL, .dt_property_getter = NULL}
+};
+static SysbusDeviceInfo pl041_info = {
+	.qdev_name = "pl041",
+	.property_setters = pl041_property_setters
+};
+
+static PropertySetter integratorcp_timer_property_setters[] = {
+	{.qdev_property_name = "freq", .dt_property_getter = get_first_clock_frequency},
+	{.qdev_property_name = NULL, .dt_property_getter = NULL}
+};
+static SysbusDeviceInfo integratorcp_timer_info = {
+	.qdev_name = "integrator_cp_timer",
+	.property_setters = integratorcp_timer_property_setters
+};
+
+
 hwdtb_declare_node_name_handler("cpus", hwdtb_init_nodename_cpus, NULL)
 
 hwdtb_declare_device_type_handler("memory", hwdtb_init_device_type_memory, NULL)
@@ -424,7 +498,8 @@ hwdtb_declare_compatible_handler("arm,amba-bus", hwdtb_init_compatibility_simple
 
 hwdtb_declare_compatible_handler("arm,pl011", hwdtb_init_compatibility_sysbus_device, (void *) "pl011")
 hwdtb_declare_compatible_handler("arm,pl031", hwdtb_init_compatibility_sysbus_device, (void *) "pl031")
-//hwdtb_declare_compatible_handler("arm,pl061", hwdtb_init_compatibility_sysbus_device, (void *) "pl061")
+hwdtb_declare_compatible_handler("arm,pl041", hwdtb_init_compatibility_sysbus_device_with_properties, &pl041_info)
+hwdtb_declare_compatible_handler("arm,pl061", hwdtb_init_compatibility_sysbus_device, (void *) "pl061")
 hwdtb_declare_compatible_handler("arm,pl080", hwdtb_init_compatibility_sysbus_device, (void *) "pl080")
 hwdtb_declare_compatible_handler("arm,pl110", hwdtb_init_compatibility_sysbus_device, (void *) "pl110")
 //TODO: interrupt-extended needs to be implemented for this
@@ -435,5 +510,6 @@ hwdtb_declare_compatible_handler("arm,pl050", hwdtb_init_compatibility_pl050, NU
 hwdtb_declare_compatible_handler("smsc,lan91c111", hwdtb_init_compatilibility_smsc_lan91c111, NULL)
 hwdtb_declare_compatible_handler("arm,versatile-vic", hwdtb_init_compatibility_pl190, NULL);
 hwdtb_declare_compatible_handler("arm,arm1136", hwdtb_init_compatibility_cpu, (void *) "arm1136")
-hwdtb_declare_compatible_handler("arm,integrator-cp-timer", hwdtb_init_compatibility_arm_integrator_cp_timer, NULL)
+hwdtb_declare_compatible_handler("arm,integrator-cp-timer", hwdtb_init_compatibility_sysbus_device_with_properties, &integratorcp_timer_info)
+hwdtb_declare_compatible_handler("arm,core-module-versatile", hwdtb_init_compatibility_sysbus_device_with_properties, &realview_sysctl_info)
 
