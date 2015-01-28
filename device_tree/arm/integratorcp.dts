@@ -1,0 +1,218 @@
+/dts-v1/;
+/include/ "integrator.dtsi"
+
+/ {
+ model = "ARM Integrator/CP";
+ compatible = "arm,integrator-cp";
+ #address-cells = <1>;
+ #size-cells = <1>;
+
+ chosen {
+  bootargs = "root=/dev/ram0 console=ttyAMA0,38400n8 earlyprintk";
+ };
+
+ memory {
+  device_type = "memory";
+  reg = <0x00000000 0x08000000>;
+ };
+
+ cpus {
+  #address-cells = <1>;
+  #size-cells = <0>;
+
+  cpu@0 {
+   device_type = "cpu";
+   compatible = "arm,arm1136";
+   reg = <0>;
+  };
+ };
+
+ xtal_codec: xtal24.576@24.576M {
+  #clock-cells = <0>;
+  compatible = "fixed-clock";
+  clock-frequency = <24576000>;
+ };
+
+
+ aaci_bitclk: aaci_bitclk@12.288M {
+  #clock-cells = <0>;
+  compatible = "fixed-factor-clock";
+  clock-div = <2>;
+  clock-mult = <1>;
+  clocks = <&xtal_codec>;
+ };
+
+
+ xtal25mhz: xtal25mhz@25M {
+  #clock-cells = <0>;
+  compatible = "fixed-clock";
+  clock-frequency = <25000000>;
+ };
+
+
+ uartclk: uartclk@14.74M {
+  #clock-cells = <0>;
+  compatible = "fixed-clock";
+  clock-frequency = <14745600>;
+ };
+
+
+ pclk: pclk@0 {
+  #clock-cells = <0>;
+  compatible = "fixed-clock";
+  clock-frequency = <0>;
+ };
+
+ core-module@10000000 {
+
+  xtal24mhz: xtal24mhz@24M {
+   #clock-cells = <0>;
+   compatible = "fixed-clock";
+   clock-frequency = <24000000>;
+  };
+
+
+
+
+
+  auxosc: cm_aux_osc@25M {
+   #clock-cells = <0>;
+   compatible = "arm,integrator-cm-auxosc";
+   clocks = <&xtal24mhz>;
+  };
+
+
+  kmiclk: kmiclk@1M {
+   #clock-cells = <0>;
+   compatible = "fixed-factor-clock";
+   clock-div = <3>;
+   clock-mult = <1>;
+   clocks = <&xtal24mhz>;
+  };
+
+
+  timclk: timclk@1M {
+   #clock-cells = <0>;
+   compatible = "fixed-factor-clock";
+   clock-div = <24>;
+   clock-mult = <1>;
+   clocks = <&xtal24mhz>;
+  };
+ };
+
+ /* Not emulated by Qemu
+ syscon {
+  compatible = "arm,integrator-cp-syscon";
+  reg = <0xcb000000 0x100>;
+ };
+ */
+
+ timer0: timer@13000000 {
+
+  compatible = "arm,integrator-cp-timer";
+  clocks = <&xtal25mhz>;
+ };
+
+ timer1: timer@13000100 {
+
+  compatible = "arm,integrator-cp-timer";
+  clocks = <&timclk>;
+ };
+
+ timer2: timer@13000200 {
+
+  compatible = "arm,integrator-cp-timer";
+  clocks = <&timclk>;
+ };
+
+ pic: pic@14000000 {
+  valid-mask = <0x1fc003ff>;
+ };
+
+  /* Qemu does not need to know about this device, contained in the core module */
+/*
+ cic: cic@10000040 {
+  compatible = "arm,versatile-fpga-irq";
+  #interrupt-cells = <1>;
+  interrupt-controller;
+  reg = <0x10000040 0x100>;
+  clear-mask = <0xffffffff>;
+  valid-mask = <0x00000007>;
+ };
+*/
+
+ sic: sic@ca000000 {
+  compatible = "arm,versatile-fpga-irq";
+  interrupt-parent = <&pic>;
+  interrupts = <26>;
+  #interrupt-cells = <1>;
+  interrupt-controller;
+  reg = <0xca000000 0x100>;
+  clear-mask = <0x00000fff>;
+  valid-mask = <0x00000fff>;
+ };
+
+ ethernet@c8000000 {
+  compatible = "smsc,lan91c111";
+  reg = <0xc8000000 0x10>;
+  interrupt-parent = <&pic>;
+  interrupts = <27>;
+ };
+
+ fpga {
+  rtc@15000000 {
+   compatible = "arm,pl031", "arm,primecell";
+   clocks = <&pclk>;
+   clock-names = "apb_pclk";
+  };
+
+  uart@16000000 {
+   compatible = "arm,pl011", "arm,primecell";
+   clocks = <&uartclk>, <&pclk>;
+   clock-names = "uartclk", "apb_pclk";
+  };
+
+  uart@17000000 {
+   compatible = "arm,pl011", "arm,primecell";
+   clocks = <&uartclk>, <&pclk>;
+   clock-names = "uartclk", "apb_pclk";
+  };
+
+  kmi@18000000 {
+   compatible = "arm,pl050", "arm,primecell";
+   clocks = <&kmiclk>, <&pclk>;
+   clock-names = "KMIREFCLK", "apb_pclk";
+  };
+
+  kmi@19000000 {
+   compatible = "arm,pl050", "arm,primecell";
+   clocks = <&kmiclk>, <&pclk>;
+   clock-names = "KMIREFCLK", "apb_pclk";
+  };
+
+  mmc@1c000000 {
+   compatible = "arm,pl180", "arm,primecell";
+   reg = <0x1c000000 0x1000>;
+   interrupts = <23 24>;
+   max-frequency = <515633>;
+   clocks = <&uartclk>, <&pclk>;
+   clock-names = "mclk", "apb_pclk";
+  };
+
+  aaci@1d000000 {
+   compatible = "arm,pl041", "arm,primecell";
+   reg = <0x1d000000 0x1000>;
+   interrupts = <25>;
+   clocks = <&pclk>;
+   clock-names = "apb_pclk";
+  };
+
+  clcd@c0000000 {
+   compatible = "arm,pl110", "arm,primecell";
+   reg = <0xC0000000 0x1000>;
+   interrupts = <22>;
+   clocks = <&auxosc>, <&pclk>;
+   clock-names = "clcd", "apb_pclk";
+  };
+ };
+};
