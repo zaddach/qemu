@@ -106,8 +106,8 @@ static void dtb_machine_init(MachineState *machine)
     dtbmachine_binfo.kernel_filename = kernel_filename;
     dtbmachine_binfo.kernel_cmdline = kernel_cmdline;
     dtbmachine_binfo.initrd_filename = initrd_filename;
-    dtbmachine_binfo.dtb_filename = machine->dtb;
-//    dtbmachine_binfo.ram_size = machine->ram_size;
+//    dtbmachine_binfo.dtb_filename = machine->dtb;
+    dtbmachine_binfo.ram_size = machine->ram_size;
 
     arm_load_kernel((ARMCPU *) cpu->qemu_device, &dtbmachine_binfo);
 }
