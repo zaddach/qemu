@@ -98,7 +98,7 @@ int hwdtb_fdt_node_get_parent(const DeviceTreeNode *node, DeviceTreeNode *parent
     }
 
     parent->offset = parent_offset;
-    parent->depth = parent_depth;
+    parent->depth = node->depth - 1/* parent_depth */;
     parent->fdt = node->fdt;
 
     return 0;
@@ -215,7 +215,7 @@ bool hwdtb_fdt_property_get_next_uint(const DeviceTreeProperty *property, Device
     if (data) {
         switch (size) {
         case 1: *data = (uint64_t) *(const uint8_t *) itr->position; break;
-        case 2: assert(false); /* Not implemented */; break;
+        case 2: *data = (uint64_t) fdt16_to_cpu(*(const uint16_t *) itr->position); break;
         case 4: *data = (uint64_t) fdt32_to_cpu(*(const uint32_t *) itr->position); break;
         case 8: *data = (uint64_t) fdt64_to_cpu(*(const uint64_t *) itr->position); break;
         default: assert(false);
@@ -274,6 +274,105 @@ int hwdtb_fdt_node_get_property_reg(const DeviceTreeNode *node, uint64_t *addres
     has_next = hwdtb_fdt_property_get_next_uint(&reg, &itr, num_size_cells * 4, size);
 
     return 0;
+}
+
+int hwdtb_fdt_node_translate_address(const DeviceTreeNode *node, uint64_t *address)
+{
+	assert(node);
+	assert(address);
+
+	/* Root node does not require translation */
+	if (hwdtb_fdt_node_is_root(node)) {
+		return 0;
+	}
+
+	DeviceTreeNode parent;
+	DeviceTreeProperty prop_ranges;
+	DeviceTreeProperty prop_num_parent_address_cells;
+	DeviceTreeProperty prop_num_our_address_cells;
+	DeviceTreeProperty prop_num_our_size_cells;
+	DeviceTreePropertyIterator propitr_ranges;
+	uint32_t num_parent_address_cells;
+	uint32_t num_our_address_cells;
+	uint32_t num_our_size_cells;
+	int err;
+	bool has_next;
+
+	err = hwdtb_fdt_node_get_parent(node, &parent);
+	if (err) {return err;}
+
+	if (hwdtb_fdt_node_is_root(&parent)) {
+		return 0;
+	}
+
+	err = hwdtb_fdt_node_get_property_recursive(&parent, "#address-cells", &prop_num_parent_address_cells);
+	if (err) {return err;}
+	num_parent_address_cells = hwdtb_fdt_property_get_uint32(&prop_num_parent_address_cells);
+
+	err = hwdtb_fdt_node_get_property_recursive(node, "#address-cells", &prop_num_our_address_cells);
+	if (err) {return err;}
+	num_our_address_cells = hwdtb_fdt_property_get_uint32(&prop_num_our_address_cells);
+
+	err = hwdtb_fdt_node_get_property_recursive(node, "#address-cells", &prop_num_our_size_cells);
+	if (err) {return err;}
+	num_our_size_cells = hwdtb_fdt_property_get_uint32(&prop_num_our_size_cells);
+
+	err = hwdtb_fdt_node_get_property(&parent, "ranges", &prop_ranges);
+	if (err) {return err;}
+
+	has_next = hwdtb_fdt_property_begin(&prop_ranges, &propitr_ranges);
+    /* An empty ranges property means that no translation takes place */
+    if (!has_next) {
+        return hwdtb_fdt_node_translate_address(&parent, address);
+    }
+
+	while (has_next) {
+		uint64_t range_address;
+		uint64_t range_size;
+		uint64_t offset;
+		has_next = hwdtb_fdt_property_get_next_uint(&prop_ranges, &propitr_ranges, num_our_address_cells * 4, &range_address);
+		assert(has_next);
+		has_next = hwdtb_fdt_property_get_next_uint(&prop_ranges, &propitr_ranges, num_parent_address_cells * 4, &offset);
+		assert(has_next);
+		has_next = hwdtb_fdt_property_get_next_uint(&prop_ranges, &propitr_ranges, num_our_size_cells * 4, &range_size);
+
+		if (*address >= range_address && *address < range_address + range_size) {
+			*address += offset;
+			return hwdtb_fdt_node_translate_address(&parent, address);
+		}
+	}
+
+	return -FDT_ERR_NOTFOUND;
+}
+
+int hwdtb_fdt_node_get_property_reg_translate(const DeviceTreeNode *node, uint64_t *address, uint64_t *size)
+{
+    assert(node);
+    assert(address);
+    assert(size);
+
+    int err;
+
+    uint64_t tmp_addr;
+    uint64_t tmp_size;
+
+    err = hwdtb_fdt_node_get_property_reg(node, &tmp_addr, &tmp_size);
+    if (err) {
+    	return err;
+    }
+
+    err = hwdtb_fdt_node_translate_address(node, &tmp_addr);
+    if (err) {return err;}
+
+    *address = tmp_addr;
+    *size = tmp_size;
+
+    return 0;
+}
+
+bool hwdtb_fdt_node_is_root(const DeviceTreeNode *node)
+{
+	return node->offset == 0;
 }
 
 bool hwdtb_fdt_node_is_compatible(const DeviceTreeNode *node, const char *compatibility)

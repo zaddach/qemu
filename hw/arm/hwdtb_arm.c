@@ -13,6 +13,7 @@
 #include "net/net.h"
 #include "qapi/qmp/qint.h"
 #include "qom/qom-qobject.h"
+#include "hw/i2c/i2c.h"
 
 #include <libfdt.h>
 
@@ -180,11 +181,6 @@ static QemuDTDeviceInitReturnCode hwdtb_sysbus_connect_interrupts_extended(SysBu
 	int n;
 	int err;
 
-	err_irq = get_interrupt_controller_by_interrupt_parent_property(node, &interrupt_controller, &num_interrupt_cells);
-	if (err_irq != QEMUDT_DEVICE_INIT_SUCCESS) {
-		return err_irq;
-	}
-
 	err = hwdtb_fdt_node_get_property(&node->dt_node, "interrupts-extended", &prop_interrupts);
 	assert(!err);
 
@@ -265,7 +261,7 @@ static QemuDTDeviceInitReturnCode hwdtb_init_compatilibility_smsc_lan91c111(Qemu
     }
     assert(err_irq == QEMUDT_DEVICE_INIT_SUCCESS);
 
-    err = hwdtb_fdt_node_get_property_reg(&node->dt_node, &address, &size);
+    err = hwdtb_fdt_node_get_property_reg_translate(&node->dt_node, &address, &size);
     assert(!err);
 
     qemu_check_nic_model(&nd_table[instance_index], "smc91c111");
@@ -360,7 +356,7 @@ static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_arm_versatile_fpga_ir
         fprintf(stderr, "WARN: found interrupt controller node %s without interrupt-controller property\n", node_name);
     }
 
-    err = hwdtb_fdt_node_get_property_reg(&node->dt_node, &address, &size);
+    err = hwdtb_fdt_node_get_property_reg_translate(&node->dt_node, &address, &size);
     assert(!err);
 
     cpu_node = hwdtb_qemudt_find_path(node->qemu_dt, "/cpus/cpu@0");
@@ -397,7 +393,7 @@ static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_sysbus_device_with_pr
 	}
 	assert(err_irq == QEMUDT_DEVICE_INIT_SUCCESS);
 
-	err = hwdtb_fdt_node_get_property_reg(&node->dt_node, &address, &size);
+	err = hwdtb_fdt_node_get_property_reg_translate(&node->dt_node, &address, &size);
 	assert(!err);
 
 	qdev = qdev_create(NULL, dev_info->qdev_name);
@@ -451,7 +447,7 @@ static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_pl190(QemuDTNode *nod
         fprintf(stderr, "WARN: found interrupt controller node %s without interrupt-controller property\n", node_name);
     }
 
-    err = hwdtb_fdt_node_get_property_reg(&node->dt_node, &address, &size);
+    err = hwdtb_fdt_node_get_property_reg_translate(&node->dt_node, &address, &size);
     assert(!err);
 
     cpu_node = hwdtb_qemudt_find_path(node->qemu_dt, "/cpus/cpu@0");
@@ -466,7 +462,62 @@ static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_pl190(QemuDTNode *nod
                                     qdev_get_gpio_in(DEVICE(cpu_node->qemu_device), ARM_CPU_FIQ),
                                     NULL);
 
-    node->is_initialized = true;
+    return QEMUDT_DEVICE_INIT_SUCCESS;
+}
+
+static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_i2c_slave(QemuDTNode *node, void *opaque)
+{
+	const char *qdev_name = (const char *) opaque;
+    DeviceTreeProperty prop_reg;
+    DeviceTreeProperty prop_num_address_cells;
+    DeviceTreeProperty prop_num_size_cells;
+    uint64_t address;
+    uint32_t num_address_cells;
+    uint32_t num_size_cells;
+    int err;
+
+    err = hwdtb_fdt_node_get_property(&node->dt_node, "#address-cells", &prop_num_address_cells);
+    if (err) {
+    	fprintf(stderr, "ERROR: Cannot recursively get property '#address-cells' for device I2C device %s\n", qdev_name);
+    	exit(1);
+    }
+
+    num_address_cells = hwdtb_fdt_property_get_uint32(&prop_num_address_cells);
+    assert(num_address_cells == 1);
+
+    err = hwdtb_fdt_node_get_property(&node->dt_node, "#size-cells", &prop_num_size_cells);
+	if (err) {
+		fprintf(stderr, "ERROR: Cannot recursively get property '#size-cells' for device I2C device %s\n", qdev_name);
+		exit(1);
+	}
+
+	num_size_cells = hwdtb_fdt_property_get_uint32(&prop_num_size_cells);
+	assert(num_size_cells == 0);
+
+    err = hwdtb_fdt_node_get_property(&node->dt_node, "reg", &prop_reg);
+    if (err) {
+    	fprintf(stderr, "ERROR: I2C device %s does not have reg device tree property\n", qdev_name);
+    	exit(1);
+    }
+
+    address = hwdtb_fdt_property_get_uint32(&prop_reg);
+
+    assert(node->parent);
+    if (!node->parent->is_initialized) {
+    	return QEMUDT_DEVICE_INIT_DEPENDENCY_NOT_INITIALIZED;
+    }
+
+    assert(node->parent->qemu_device);
+
+    I2CBus *i2c = (I2CBus *)qdev_get_child_bus(node->parent->qemu_device, "i2c");
+    assert(i2c);
+
+    DeviceState *dev = i2c_create_slave(i2c, qdev_name, address);
+    if (!dev) {
+    	return QEMUDT_DEVICE_INIT_ERROR;
+    }
+
+    node->qemu_device = dev;
     return QEMUDT_DEVICE_INIT_SUCCESS;
 }
 
@@ -608,7 +659,6 @@ hwdtb_declare_compatible_handler("arm,versatile-fpga-irq", hwdtb_init_compatibil
 /* All nodes that are supposed to be skipped, but their children to be explored are treated as simple_bus */
 hwdtb_declare_compatible_handler("simple-bus", hwdtb_init_compatibility_simple_bus, NULL)
 hwdtb_declare_compatible_handler("arm,amba-bus", hwdtb_init_compatibility_simple_bus, NULL)
-hwdtb_declare_compatible_handler("arm,amba-bus", hwdtb_init_compatibility_simple_bus, NULL)
 
 hwdtb_declare_compatible_handler("arm,pl011", hwdtb_init_compatibility_sysbus_device, (void *) "pl011")
 hwdtb_declare_compatible_handler("arm,pl031", hwdtb_init_compatibility_sysbus_device, (void *) "pl031")
@@ -618,9 +668,11 @@ hwdtb_declare_compatible_handler("arm,pl080", hwdtb_init_compatibility_sysbus_de
 hwdtb_declare_compatible_handler("arm,pl081", hwdtb_init_compatibility_sysbus_device, (void *) "pl080")
 hwdtb_declare_compatible_handler("arm,pl110", hwdtb_init_compatibility_sysbus_device, (void *) "pl110")
 //TODO: interrupt-extended needs to be implemented for this
-//hwdtb_declare_compatible_handler("arm,pl180", hwdtb_init_compatibility_sysbus_device, (void *) "pl181")
+hwdtb_declare_compatible_handler("arm,pl180", hwdtb_init_compatibility_sysbus_device, (void *) "pl181")
 hwdtb_declare_compatible_handler("arm,sp804", hwdtb_init_compatibility_sysbus_device, (void *) "sp804")
 hwdtb_declare_compatible_handler("arm,versatile-sic", hwdtb_init_compatibility_sysbus_device, (void *) "versatilepb_sic")
+hwdtb_declare_compatible_handler("arm,versatile-i2c", hwdtb_init_compatibility_sysbus_device, (void *) "versatile_i2c")
+hwdtb_declare_compatible_handler("dallas,ds1338", hwdtb_init_compatibility_i2c_slave, (void *) "ds1338")
 hwdtb_declare_compatible_handler("arm,pl050", hwdtb_init_compatibility_pl050, NULL)
 hwdtb_declare_compatible_handler("smsc,lan91c111", hwdtb_init_compatilibility_smsc_lan91c111, NULL)
 hwdtb_declare_compatible_handler("arm,versatile-vic", hwdtb_init_compatibility_pl190, NULL);

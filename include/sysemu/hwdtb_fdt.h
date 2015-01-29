@@ -81,21 +81,21 @@ static inline bool hwdtb_fdt_property_get_next_uint8(const DeviceTreeProperty *p
 
 static inline bool hwdtb_fdt_property_get_next_uint16(const DeviceTreeProperty *property, DeviceTreePropertyIterator *itr, uint16_t *data) {
     uint64_t tmp;
-    bool has_next = hwdtb_fdt_property_get_next_uint(property, itr, 1, &tmp);
+    bool has_next = hwdtb_fdt_property_get_next_uint(property, itr, 2, &tmp);
     if (data) {*data = (uint8_t) tmp;}
     return has_next;
 }
 
 static inline bool hwdtb_fdt_property_get_next_uint32(const DeviceTreeProperty *property, DeviceTreePropertyIterator *itr, uint32_t *data) {
     uint64_t tmp;
-    bool has_next = hwdtb_fdt_property_get_next_uint(property, itr, 1, &tmp);
+    bool has_next = hwdtb_fdt_property_get_next_uint(property, itr, 4, &tmp);
     if (data) {*data = (uint8_t) tmp;}
     return has_next;
 }
 
 static inline bool hwdtb_fdt_property_get_next_uint64(const DeviceTreeProperty *property, DeviceTreePropertyIterator *itr, uint64_t *data) {
     uint64_t tmp;
-    bool has_next = hwdtb_fdt_property_get_next_uint(property, itr, 1, &tmp);
+    bool has_next = hwdtb_fdt_property_get_next_uint(property, itr, 8, &tmp);
     if (data) {*data = (uint8_t) tmp;}
     return has_next;
 }
@@ -128,6 +128,9 @@ static inline uint8_t hwdtb_fdt_property_get_uint8(const DeviceTreeProperty *pro
 
 int hwdtb_fdt_node_get_property_reg(const DeviceTreeNode *node, uint64_t *address, uint64_t *size);
 bool hwdtb_fdt_node_is_compatible(const DeviceTreeNode *node, const char *compatibility);
+int hwdtb_fdt_node_translate_address(const DeviceTreeNode *node, uint64_t *address);
+bool hwdtb_fdt_node_is_root(const DeviceTreeNode *node);
+int hwdtb_fdt_node_get_property_reg_translate(const DeviceTreeNode *node, uint64_t *address, uint64_t *size);
 /**
  * Get a node by absolute path.
  * @param fdt Flattened device tree containing the node.
