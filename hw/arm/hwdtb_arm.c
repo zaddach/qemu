@@ -457,7 +457,7 @@ static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_pl190(QemuDTNode *nod
         return QEMUDT_DEVICE_INIT_DEPENDENCY_NOT_INITIALIZED;
     }
 
-    node->qemu_device = sysbus_create_varargs(TYPE_INTEGRATOR_PIC, address,
+    node->qemu_device = sysbus_create_varargs("pl190", address,
                                     qdev_get_gpio_in(DEVICE(cpu_node->qemu_device), ARM_CPU_IRQ),
                                     qdev_get_gpio_in(DEVICE(cpu_node->qemu_device), ARM_CPU_FIQ),
                                     NULL);
@@ -476,7 +476,9 @@ static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_i2c_slave(QemuDTNode 
     uint32_t num_size_cells;
     int err;
 
-    err = hwdtb_fdt_node_get_property(&node->dt_node, "#address-cells", &prop_num_address_cells);
+    assert(node->parent);
+
+    err = hwdtb_fdt_node_get_property_recursive(&node->parent->dt_node, "#address-cells", &prop_num_address_cells);
     if (err) {
     	fprintf(stderr, "ERROR: Cannot recursively get property '#address-cells' for device I2C device %s\n", qdev_name);
     	exit(1);
@@ -485,7 +487,7 @@ static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_i2c_slave(QemuDTNode 
     num_address_cells = hwdtb_fdt_property_get_uint32(&prop_num_address_cells);
     assert(num_address_cells == 1);
 
-    err = hwdtb_fdt_node_get_property(&node->dt_node, "#size-cells", &prop_num_size_cells);
+    err = hwdtb_fdt_node_get_property_recursive(&node->parent->dt_node, "#size-cells", &prop_num_size_cells);
 	if (err) {
 		fprintf(stderr, "ERROR: Cannot recursively get property '#size-cells' for device I2C device %s\n", qdev_name);
 		exit(1);
@@ -542,6 +544,7 @@ static QemuDTDeviceInitReturnCode hwdtb_init_compatibility_cpu(QemuDTNode *node,
         return QEMUDT_DEVICE_INIT_ERROR;
     }
 
+    fprintf(stderr, "INFO: Initializing CPU %s\n", cpu_name);
     ARMCPU *cpu = cpu_arm_init(cpu_name);
     assert(cpu);
 
@@ -619,6 +622,62 @@ static QObject * hwdtb_get_first_clock_frequency_as_qdev_property(QemuDTNode *no
     return QOBJECT(qint_from_int(clock_frequency));
 }
 
+/**
+ * Get the system RAM size from the device tree /memory node 'reg' property and
+ * return it divided by a factor.
+ */
+static QObject * integratorcp_cm_get_memsz(QemuDTNode *node)
+{
+	QemuDTNode *memory = hwdtb_qemudt_find_path(node->qemu_dt, "/memory");
+	DeviceTreeProperty prop_reg;
+	DeviceTreeProperty prop_num_address_cells;
+	DeviceTreeProperty prop_num_size_cells;
+	DeviceTreePropertyIterator propitr_reg;
+	uint32_t num_address_cells;
+	uint32_t num_size_cells;
+	uint64_t size;
+	int err;
+	bool has_next;
+
+	assert(node->parent);
+	err = hwdtb_fdt_node_get_property_recursive(&memory->parent->dt_node, "#address-cells", &prop_num_address_cells);
+	if (err) {
+		fprintf(stderr, "ERROR: Cannot get '#address-cells' property from any ancestor of the dtb /memory node\n");
+		exit(1);
+	}
+	num_address_cells = hwdtb_fdt_property_get_uint32(&prop_num_address_cells);
+
+	err = hwdtb_fdt_node_get_property_recursive(&memory->parent->dt_node, "#size-cells", &prop_num_size_cells);
+	if (err) {
+		fprintf(stderr, "ERROR: Cannot get '#size-cells' property from any ancestor of the dtb /memory node\n");
+		exit(1);
+	}
+	num_size_cells = hwdtb_fdt_property_get_uint32(&prop_num_size_cells);
+
+	/* Just take the size of the first memory region */
+	err = hwdtb_fdt_node_get_property(&memory->dt_node, "reg", &prop_reg);
+	if (err) {
+		fprintf(stderr, "ERROR: Cannot get 'reg' property from dtb node /memory\n");
+		exit(1);
+	}
+	has_next = hwdtb_fdt_property_begin(&prop_reg, &propitr_reg);
+	assert(has_next);
+	has_next = hwdtb_fdt_property_get_next_uint(&prop_reg, &propitr_reg, num_address_cells * 4, NULL);
+	assert(has_next);
+	has_next = hwdtb_fdt_property_get_next_uint(&prop_reg, &propitr_reg, num_size_cells * 4, &size);
+
+	return QOBJECT(qint_from_int(size >> 20));
+}
+
+static PropertySetter integratorcp_cm_property_setters[] = {
+	{.qdev_property_name = "memsz", .dt_property_getter = integratorcp_cm_get_memsz},
+	{.qdev_property_name = NULL, .dt_property_getter = NULL}
+};
+static SysbusDeviceInfo integratorcp_cm_info = {
+	.qdev_name = "pl041",
+	.property_setters = integratorcp_cm_property_setters
+};
+
 static QObject * realview_sysctl_get_sys_id(QemuDTNode *node) {return QOBJECT(qint_from_int(0x41007004));}
 static QObject * realview_sysctl_get_proc_id(QemuDTNode *node) {return QOBJECT(qint_from_int(0x02000000));}
 static PropertySetter realview_sysctl_property_setters[] = {
@@ -655,6 +714,7 @@ hwdtb_declare_node_name_handler("cpus", hwdtb_init_nodename_cpus, NULL)
 
 hwdtb_declare_device_type_handler("memory", hwdtb_init_device_type_memory, NULL)
 
+/* Diese Mappings wurden mit Blut, Schweiss und Traenen erkaempft. */
 hwdtb_declare_compatible_handler("arm,versatile-fpga-irq", hwdtb_init_compatibility_arm_versatile_fpga_irq, NULL)
 /* All nodes that are supposed to be skipped, but their children to be explored are treated as simple_bus */
 hwdtb_declare_compatible_handler("simple-bus", hwdtb_init_compatibility_simple_bus, NULL)
@@ -663,6 +723,7 @@ hwdtb_declare_compatible_handler("arm,amba-bus", hwdtb_init_compatibility_simple
 hwdtb_declare_compatible_handler("arm,pl011", hwdtb_init_compatibility_sysbus_device, (void *) "pl011")
 hwdtb_declare_compatible_handler("arm,pl031", hwdtb_init_compatibility_sysbus_device, (void *) "pl031")
 hwdtb_declare_compatible_handler("arm,pl041", hwdtb_init_compatibility_sysbus_device_with_properties, &pl041_info)
+hwdtb_declare_compatible_handler("qemu,pl041", hwdtb_init_compatibility_sysbus_device_with_properties, &pl041_info)
 hwdtb_declare_compatible_handler("arm,pl061", hwdtb_init_compatibility_sysbus_device, (void *) "pl061")
 hwdtb_declare_compatible_handler("arm,pl080", hwdtb_init_compatibility_sysbus_device, (void *) "pl080")
 hwdtb_declare_compatible_handler("arm,pl081", hwdtb_init_compatibility_sysbus_device, (void *) "pl080")
@@ -670,14 +731,17 @@ hwdtb_declare_compatible_handler("arm,pl110", hwdtb_init_compatibility_sysbus_de
 //TODO: interrupt-extended needs to be implemented for this
 hwdtb_declare_compatible_handler("arm,pl180", hwdtb_init_compatibility_sysbus_device, (void *) "pl181")
 hwdtb_declare_compatible_handler("arm,sp804", hwdtb_init_compatibility_sysbus_device, (void *) "sp804")
+hwdtb_declare_compatible_handler("cdns,uart-r1p8", hwdtb_init_compatibility_sysbus_device, (void *) "cadence_uart")
+hwdtb_declare_compatible_handler("ns16550", hwdtb_init_compatibility_sysbus_device, (void *) "strongarm-uart")
+
 hwdtb_declare_compatible_handler("arm,versatile-sic", hwdtb_init_compatibility_sysbus_device, (void *) "versatilepb_sic")
 hwdtb_declare_compatible_handler("arm,versatile-i2c", hwdtb_init_compatibility_sysbus_device, (void *) "versatile_i2c")
 hwdtb_declare_compatible_handler("dallas,ds1338", hwdtb_init_compatibility_i2c_slave, (void *) "ds1338")
 hwdtb_declare_compatible_handler("arm,pl050", hwdtb_init_compatibility_pl050, NULL)
 hwdtb_declare_compatible_handler("smsc,lan91c111", hwdtb_init_compatilibility_smsc_lan91c111, NULL)
 hwdtb_declare_compatible_handler("arm,versatile-vic", hwdtb_init_compatibility_pl190, NULL);
-hwdtb_declare_compatible_handler("arm,versatile-sic", hwdtb_init_compatibility_sysbus_device, (void *) "versatilepb_sic")
 hwdtb_declare_compatible_handler("arm,arm1136", hwdtb_init_compatibility_cpu, (void *) "arm1136")
+hwdtb_declare_compatible_handler("arm,arm926", hwdtb_init_compatibility_cpu, (void *) "arm926")
 hwdtb_declare_compatible_handler("arm,integrator-cp-timer", hwdtb_init_compatibility_sysbus_device_with_properties, &integratorcp_timer_info)
 hwdtb_declare_compatible_handler("arm,core-module-versatile", hwdtb_init_compatibility_sysbus_device_with_properties, &realview_sysctl_info)
-
+hwdtb_declare_compatible_handler("arm,core-module-integrator", hwdtb_init_compatibility_sysbus_device_with_properties, &integratorcp_cm_info)
