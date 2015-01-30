@@ -207,7 +207,11 @@ bool hwdtb_fdt_property_get_next_uint(const DeviceTreeProperty *property, Device
 {
     assert(property);
     assert(itr);
-    assert(data);
+
+    if (size == 0) {
+    	return true;
+    }
+
     assert(size == 1 || size == 2 || size == 4 || size == 8);
     assert(itr->position >= property->data);
     assert(itr->position + size <= property->data + property->size);
@@ -247,6 +251,7 @@ int hwdtb_fdt_node_get_property_reg(const DeviceTreeNode *node, uint64_t *addres
     assert(address);
     assert(size);
 
+    DeviceTreeNode parent;
     DeviceTreeProperty prop_num_address_cells;
     DeviceTreeProperty prop_num_size_cells;
     DeviceTreeProperty reg;
@@ -256,11 +261,14 @@ int hwdtb_fdt_node_get_property_reg(const DeviceTreeNode *node, uint64_t *addres
     int err;
     bool has_next;
 
-    err = hwdtb_fdt_node_get_property_recursive(node, "#address-cells", &prop_num_address_cells);
+    err = hwdtb_fdt_node_get_parent(node, &parent);
+    if (err) {return err;}
+
+    err = hwdtb_fdt_node_get_property_recursive(&parent, "#address-cells", &prop_num_address_cells);
     assert(!err);
     num_address_cells = hwdtb_fdt_property_get_uint32(&prop_num_address_cells);
 
-    err = hwdtb_fdt_node_get_property_recursive(node, "#size-cells", &prop_num_size_cells);
+    err = hwdtb_fdt_node_get_property_recursive(&parent, "#size-cells", &prop_num_size_cells);
     assert(!err);
     num_size_cells = hwdtb_fdt_property_get_uint32(&prop_num_size_cells);
 
