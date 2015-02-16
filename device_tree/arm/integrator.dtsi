@@ -6,7 +6,7 @@
 
 / {
 	core-module@10000000 {
-		compatible = "arm,core-module-integrator", "qemu,integrator_cm";
+		compatible = "arm,core-module-integrator";
 		reg = <0x10000000 0x200>;
 	};
 
@@ -34,7 +34,7 @@
 	};
 
 	pic@14000000 {
-		compatible = "arm,versatile-fpga-irq", "qemu,integrator_pic";
+		compatible = "arm,versatile-fpga-irq";
 		#interrupt-cells = <1>;
 		interrupt-controller;
 		reg = <0x14000000 0x100>;
@@ -47,7 +47,7 @@
 	};
 
 	fpga {
-		compatible = "arm,amba-bus", "simple-bus", "qemu,simple-bus";
+		compatible = "arm,amba-bus", "simple-bus";
 		#address-cells = <1>;
 		#size-cells = <1>;
 		ranges;
